@@ -1,0 +1,22 @@
+# Loot / scan results
+loot/
+*.pcap
+*.json
+!config.example.json
+
+# OpenCelliD API key / cache
+opencellid.key
+cell_cache/
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets / personal data
+config.json
+*.key
