@@ -33,7 +33,7 @@ MUDI_USER="$(_cfg mudi_user root)"
 MUDI_KEY="$(_cfg mudi_key /root/.ssh/mudi_key)"
 MUDI_PY="$(_cfg mudi_python /root/raypager/python)"
 
-SSH_OPTS="-i $MUDI_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes"
+SSH_OPTS="-i $MUDI_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes -o HostKeyAlgorithms=+ssh-rsa"
 
 # ── SSH helper ────────────────────────────────────────────────────────────────
 mudi() {

@@ -53,25 +53,29 @@ def _at(cmd):
 # ─── Parsers ────────────────────────────────────────────────────────────────
 
 def _parse_qeng_lte(fields):
-    """Parse AT+QENG="servingcell" fields for LTE (FDD/TDD)."""
-    # Expected (after "servingcell",<state>,"LTE",<duplex>):
-    # MCC, MNC, cellID(hex), PCID, EARFCN, freq_band, ul_bw, dl_bw, TAC, RSRP, RSRQ, RSSI, SINR, srxlev
+    """Parse AT+QENG="servingcell" fields for LTE (FDD/TDD).
+
+    fields (0-indexed from after "servingcell"):
+      [0]=state  [1]=LTE  [2]=duplex  [3]=MCC  [4]=MNC  [5]=cellID(hex)
+      [6]=PCID   [7]=EARFCN  [8]=band  [9]=UL_BW  [10]=DL_BW  [11]=TAC(hex)
+      [12]=RSRP  [13]=RSRQ  [14]=RSSI  [15]=SINR  [16]=CQI  ...
+    """
     try:
         return {
-            "rat":       "LTE",
-            "duplex":    fields[3],
-            "mcc":       fields[4],
-            "mnc":       fields[5],
-            "cell_id":   int(fields[6], 16),          # hex → int
-            "cell_id_hex": fields[6].upper(),
-            "pcid":      int(fields[7]),
-            "earfcn":    int(fields[8]),
-            "band":      int(fields[9]),
-            "tac":       int(fields[12], 16),          # hex → int
-            "rsrp":      int(fields[13]),              # dBm
-            "rsrq":      int(fields[14]),              # dB
-            "rssi":      int(fields[15]),              # dBm
-            "sinr":      int(fields[16]),              # dB
+            "rat":         "LTE",
+            "duplex":      fields[2],
+            "mcc":         fields[3],
+            "mnc":         fields[4],
+            "cell_id":     int(fields[5], 16),          # hex → int
+            "cell_id_hex": fields[5].upper(),
+            "pcid":        int(fields[6]),
+            "earfcn":      int(fields[7]),
+            "band":        int(fields[8]),
+            "tac":         int(fields[11], 16),          # hex → int
+            "rsrp":        int(fields[12]),              # dBm
+            "rsrq":        int(fields[13]),              # dB
+            "rssi":        int(fields[14]),              # dBm
+            "sinr":        int(fields[15]),              # dB
         }
     except (IndexError, ValueError) as e:
         log.warning("LTE field parse error: %s | fields: %s", e, fields)
@@ -79,23 +83,26 @@ def _parse_qeng_lte(fields):
 
 
 def _parse_qeng_nr(fields):
-    """Parse AT+QENG="servingcell" fields for 5G NR SA/NSA."""
-    # NR SA: "servingcell",<state>,"NR",<duplex>,MCC,MNC,cellID(hex),<pci>,<arfcn>,<band>,<TAC>,<RSRP>,<RSRQ>,<SINR>,...
+    """Parse AT+QENG="servingcell" fields for 5G NR SA/NSA.
+
+    fields: [0]=state [1]=NR [2]=duplex [3]=MCC [4]=MNC [5]=cellID(hex)
+            [6]=PCI   [7]=ARFCN [8]=band [9]=TAC(hex) [10]=RSRP [11]=RSRQ [12]=SINR
+    """
     try:
         return {
-            "rat":       "NR",
-            "duplex":    fields[3],
-            "mcc":       fields[4],
-            "mnc":       fields[5],
-            "cell_id":   int(fields[6], 16),
-            "cell_id_hex": fields[6].upper(),
-            "pci":       int(fields[7]),
-            "arfcn":     int(fields[8]),
-            "band":      int(fields[9]),
-            "tac":       int(fields[10], 16),
-            "rsrp":      int(fields[11]),
-            "rsrq":      int(fields[12]),
-            "sinr":      int(fields[13]),
+            "rat":         "NR",
+            "duplex":      fields[2],
+            "mcc":         fields[3],
+            "mnc":         fields[4],
+            "cell_id":     int(fields[5], 16),
+            "cell_id_hex": fields[5].upper(),
+            "pci":         int(fields[6]),
+            "arfcn":       int(fields[7]),
+            "band":        int(fields[8]),
+            "tac":         int(fields[9], 16),
+            "rsrp":        int(fields[10]),
+            "rsrq":        int(fields[11]),
+            "sinr":        int(fields[12]),
         }
     except (IndexError, ValueError) as e:
         log.warning("NR field parse error: %s | fields: %s", e, fields)
@@ -103,20 +110,23 @@ def _parse_qeng_nr(fields):
 
 
 def _parse_qeng_wcdma(fields):
-    """Parse AT+QENG="servingcell" fields for WCDMA/UMTS."""
-    # "servingcell",<state>,"WCDMA",MCC,MNC,LAC(hex),cellID(hex),UARFCN,PSC,RSCP,ECIO
+    """Parse AT+QENG="servingcell" fields for WCDMA/UMTS.
+
+    fields: [0]=state [1]=WCDMA [2]=MCC [3]=MNC [4]=LAC(hex) [5]=cellID(hex)
+            [6]=UARFCN [7]=PSC [8]=RSCP [9]=ECIO
+    """
     try:
         return {
-            "rat":       "WCDMA",
-            "mcc":       fields[3],
-            "mnc":       fields[4],
-            "lac":       int(fields[5], 16),
-            "cell_id":   int(fields[6], 16),
-            "cell_id_hex": fields[6].upper(),
-            "uarfcn":    int(fields[7]),
-            "psc":       int(fields[8]),
-            "rscp":      int(fields[9]),
-            "ecio":      int(fields[10]),
+            "rat":         "WCDMA",
+            "mcc":         fields[2],
+            "mnc":         fields[3],
+            "lac":         int(fields[4], 16),
+            "cell_id":     int(fields[5], 16),
+            "cell_id_hex": fields[5].upper(),
+            "uarfcn":      int(fields[6]),
+            "psc":         int(fields[7]),
+            "rscp":        int(fields[8]),
+            "ecio":        int(fields[9]),
         }
     except (IndexError, ValueError) as e:
         log.warning("WCDMA field parse error: %s | fields: %s", e, fields)
