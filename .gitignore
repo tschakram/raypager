@@ -4,9 +4,11 @@ loot/
 *.json
 !config.example.json
 
-# OpenCelliD API key / cache
+# OpenCelliD API key, cache, upload queue
+# API key lives in config.json (already gitignored below)
 opencellid.key
 cell_cache/
+upload_queue/
 
 # Rust build artifacts
 target/

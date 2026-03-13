@@ -1,0 +1,7 @@
+{
+  "opencellid_key": "YOUR_OPENCELLID_API_KEY",
+  "mudi_host": "192.168.8.1",
+  "mudi_user": "root",
+  "mudi_key": "/root/.ssh/mudi_key",
+  "mudi_python": "/root/raypager/python"
+}
