@@ -525,8 +525,8 @@ def upload_pending(api_key=None):
             stats["failed"] += 1
             break
 
-        # OpenCelliD returns "Measurements uploaded." on success
-        if "uploaded" in resp.lower() or "success" in resp.lower():
+        # OpenCelliD returns "Measurements uploaded." or "Your measurement has been inserted."
+        if "uploaded" in resp.lower() or "success" in resp.lower() or "inserted" in resp.lower():
             os.remove(fpath)
             stats["uploaded"] += 1
             log.debug("Uploaded and removed: %s", fname)
