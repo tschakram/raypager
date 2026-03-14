@@ -12,6 +12,9 @@
 # Loot:    /root/loot/raypager/
 # =============================================================================
 
+export PATH="/mmc/usr/bin:/mmc/usr/sbin:/mmc/bin:/mmc/sbin:$PATH"
+export LD_LIBRARY_PATH="/mmc/usr/lib:/mmc/lib:${LD_LIBRARY_PATH:-}"
+
 PAYLOAD_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$PAYLOAD_DIR/config.json"
 LOOT_DIR="/root/loot/raypager"
