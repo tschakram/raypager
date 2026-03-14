@@ -26,7 +26,9 @@ import gzip
 import io
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import math
 import logging
@@ -34,6 +36,13 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import uuid
+
+# Some embedded Python builds omit _ssl; fall back to curl for HTTPS
+try:
+    import ssl as _ssl_mod  # noqa: F401
+    _HAS_SSL = True
+except ImportError:
+    _HAS_SSL = False
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +125,48 @@ def _cache_write(path, data):
         log.warning("Cache write failed: %s", e)
 
 
+# ─── curl fallbacks (used when Python _ssl module is unavailable) ────────────
+
+def _curl_get(url, timeout=API_TIMEOUT):
+    """HTTP GET via curl -sk (skips cert verification; used without ssl module)."""
+    try:
+        r = subprocess.run(
+            ["curl", "-sk", "--max-time", str(timeout), url],
+            capture_output=True, timeout=timeout + 2,
+        )
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace")
+        log.warning("curl GET failed (exit %d): %s", r.returncode,
+                    r.stderr.decode(errors="replace")[:100])
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        log.warning("curl GET error: %s", e)
+        return None
+
+
+def _curl_post_multipart(url, filename, file_data, timeout=API_TIMEOUT):
+    """Multipart POST via curl -sk; writes file_data to a tmp file."""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv.gz") as tmp:
+            tmp.write(file_data)
+            tmp_path = tmp.name
+        r = subprocess.run(
+            ["curl", "-sk", "--max-time", str(timeout),
+             "-F", f"dataFile=@{tmp_path};filename={filename};type=application/octet-stream",
+             url],
+            capture_output=True, timeout=timeout + 2,
+        )
+        os.unlink(tmp_path)
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace")
+        log.warning("curl POST failed (exit %d): %s", r.returncode,
+                    r.stderr.decode(errors="replace")[:100])
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        log.warning("curl POST error: %s", e)
+        return None
+
+
 # ─── OpenCelliD API ─────────────────────────────────────────────────────────
 
 def _api_lookup(api_key, mcc, mnc, cell_id, tac):
@@ -133,6 +184,16 @@ def _api_lookup(api_key, mcc, mnc, cell_id, tac):
         "format": "json",
     })
     url = f"{OCID_API_URL}?{params}"
+
+    if not _HAS_SSL:
+        raw = _curl_get(url, timeout=API_TIMEOUT)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            log.warning("OpenCelliD curl response not JSON: %s", raw[:200])
+            return None
 
     try:
         with urllib.request.urlopen(url, timeout=API_TIMEOUT) as resp:
@@ -265,7 +326,7 @@ def lookup(cell_info, our_lat=None, our_lon=None):
         })
 
     elif data.get("status") == "error" or "lat" not in data:
-        msg = data.get("message", "unknown error") if data else "no response"
+        msg = (data.get("message") or data.get("error") or "unknown error") if data else "no response"
         result.update({
             "threat": THREAT_UNKNOWN,
             "threat_label": THREAT_LABELS[THREAT_UNKNOWN],
@@ -347,10 +408,14 @@ def _build_csv_row(cell_info, lat, lon):
 def _multipart_post(url, fields, filename, file_data):
     """
     Minimal stdlib multipart/form-data POST.
+    Falls back to curl when Python _ssl module is unavailable.
     fields: dict of form fields
     filename: name for the file part
     file_data: bytes
     """
+    if not _HAS_SSL:
+        return _curl_post_multipart(url, filename, file_data)
+
     boundary = uuid.uuid4().hex
     ctype    = f"multipart/form-data; boundary={boundary}"
 
