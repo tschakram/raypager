@@ -134,28 +134,109 @@ LED feedback: Green=CLEAN · Yellow=UNKNOWN · Orange=MISMATCH · Red=GHOST
 
 ## Setup
 
-### On the Mudi V2
+### Requirements
+
+#### GL-E750V2 Mudi V2
+| Requirement | How to get it |
+|---|---|
+| OpenWrt 22.03.x | factory firmware |
+| Python 3.x | `opkg update && opkg install python3` |
+| `curl` | `opkg install curl` (HTTPS fallback for OpenCelliD API) |
+| `gl_modem` AT wrapper | pre-installed on GL.iNet firmware |
+| Blue Merle | [srlabs/blue-merle](https://github.com/srlabs/blue-merle) — install on Mudi |
+| u-blox M8130 GPS dongle | plug into Mudi USB-A port → `/dev/ttyACM0` |
+| LTE data active | `gl_modem -B 1-1.2 connect-auto` (after each boot) |
+
+> **Note:** All Python modules are stdlib-only — no `pip install` needed on Mudi.
+
+#### WiFi Pineapple Pager
+| Requirement | How to get it |
+|---|---|
+| Pager firmware with DuckyScript | factory firmware |
+| SSH key to Mudi | generate on Pager, add to Mudi's `/etc/dropbear/authorized_keys` |
+| WiFi connection to Mudi | configure Pager WiFi client (wlan0cli) → Mudi AP |
+
+---
+
+### File Layout
+
+```
+Mudi V2:
+  /root/raypager/
+  ├── python/
+  │   ├── cell_info.py       ← AT+QENG modem queries
+  │   ├── gps.py             ← NMEA GPS reader (/dev/ttyACM0)
+  │   ├── opencellid.py      ← tower lookup + upload queue
+  │   ├── blue_merle.py      ← IMEI rotation wrapper
+  │   └── cyt_export.py      ← CYT report export
+  ├── config.json            ← gitignored! contains API key
+  └── config.example.json    ← template (safe to commit)
+
+Pager:
+  /root/payloads/user/reconnaissance/raypager/
+  ├── payload.sh             ← DuckyScript entry point
+  └── config.json            ← Pager-side connection config (no API key)
+
+Loot (Mudi, gitignored):
+  /root/loot/raypager/
+  ├── reports/               ← JSON scan reports
+  └── upload_queue/          ← OpenCelliD CSV queue
+```
+
+---
+
+### Installation
+
+#### 1. Mudi V2
 
 ```bash
-# Clone to Mudi
+# Install dependencies
+opkg update && opkg install python3 curl
+
+# Clone repo
 git clone https://github.com/tschakram/raypager.git /root/raypager
+cd /root/raypager
 
-# Copy config template and fill in your OpenCelliD API key
+# Create config from template
 cp config.example.json config.json
-vi config.json
+vi config.json   # set opencellid_key + mudi_* values
+
+# Create loot dirs
+mkdir -p /root/loot/raypager/reports /root/loot/raypager/upload_queue
+
+# Generate SSH key for Pager → Mudi access (run on Pager, add pub key here)
+# echo "ssh-ed25519 AAAA..." >> /etc/dropbear/authorized_keys
+
+# Activate LTE data (needed after every boot)
+gl_modem -B 1-1.2 connect-auto
 ```
 
-### On the Pager
+#### 2. WiFi Pineapple Pager
 
 ```bash
-# Deploy payload
-cp -r raypager/ /root/payloads/user/reconnaissance/raypager/
+# Connect Pager WiFi client (wlan0cli) to Mudi AP via Pager UI
 
-# Configure SSH key to Mudi
-# Edit config.json: mudi_host, mudi_user, mudi_key, mudi_python
+# Generate SSH key for Mudi access
+ssh-keygen -t ed25519 -f /root/.ssh/mudi_key -N ""
+# → copy /root/.ssh/mudi_key.pub to Mudi's /etc/dropbear/authorized_keys
+
+# Deploy payload
+mkdir -p /root/payloads/user/reconnaissance/raypager
+cp payload.sh /root/payloads/user/reconnaissance/raypager/
+chmod 755 /root/payloads/user/reconnaissance/raypager/payload.sh
+
+# Create Pager-side config
+cat > /root/payloads/user/reconnaissance/raypager/config.json << 'EOF'
+{
+  "mudi_host": "192.168.8.1",
+  "mudi_user": "root",
+  "mudi_key": "/root/.ssh/mudi_key",
+  "mudi_python": "/root/raypager/python"
+}
+EOF
 ```
 
-### `config.json` (gitignored)
+### `config.json` on Mudi (gitignored)
 
 ```json
 {
@@ -166,6 +247,8 @@ cp -r raypager/ /root/payloads/user/reconnaissance/raypager/
   "mudi_python": "/root/raypager/python"
 }
 ```
+
+Get your free OpenCelliD API key at [opencellid.org](https://opencellid.org/).
 
 ---
 
