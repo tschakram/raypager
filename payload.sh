@@ -169,11 +169,11 @@ do_scan() {
 # ── IMEI Rotation ─────────────────────────────────────────────────────────────
 do_rotate() {
     # Mode picker
-    NUMBER_PICKER "IMEI Rotation" \
-        "1:Random IMEI" \
-        "2:IMSI-based IMEI" \
-        "3:Cancel"
-    local pick=$?
+    local pick
+    pick=$(NUMBER_PICKER "IMEI Rotation\n1:Random  2:Deterministic  3:Cancel" 1)
+    case $? in
+        $DUCKYSCRIPT_CANCELLED|$DUCKYSCRIPT_REJECTED|$DUCKYSCRIPT_ERROR) return ;;
+    esac
 
     [ "$pick" -eq 3 ] && return
 
@@ -258,17 +258,19 @@ do_reports() {
 
     [ $count -eq 0 ] && { SHOW_REPORT "No reports" "Run a scan first."; WAIT_FOR_BUTTON_PRESS; return; }
 
-    # Build menu entries
-    local menu_args=()
+    # Build prompt with report labels
+    local menu_prompt="Reports (1-$((count+1))):"
     for i in $(seq 1 $count); do
         local label
         label=$(mudi_py "cyt_export.py" "show" "${rpaths[$i]}" 2>/dev/null | head -1)
-        menu_args+=("$i:$label")
+        menu_prompt="$menu_prompt\n$i:$label"
     done
-    menu_args+=("$((count+1)):Back")
-
-    NUMBER_PICKER "Reports" "${menu_args[@]}"
-    local pick=$?
+    menu_prompt="$menu_prompt\n$((count+1)):Back"
+    local pick
+    pick=$(NUMBER_PICKER "$menu_prompt" "$((count+1))")
+    case $? in
+        $DUCKYSCRIPT_CANCELLED|$DUCKYSCRIPT_REJECTED|$DUCKYSCRIPT_ERROR) return ;;
+    esac
 
     [ "$pick" -gt "$count" ] && return
 
@@ -359,16 +361,12 @@ main() {
     LED $LED_OFF
 
     while true; do
-        NUMBER_PICKER "Raypager" \
-            "1:Scan Cell Tower" \
-            "2:Status" \
-            "3:Rotate IMEI" \
-            "4:Reports" \
-            "5:Upload OpenCelliD" \
-            "6:Merge CYT" \
-            "7:Exit"
-
+        local pick
+        pick=$(NUMBER_PICKER "Raypager\n1:Scan  2:Status  3:IMEI\n4:Reports  5:Upload  6:CYT\n7:Exit" 1)
         case $? in
+            $DUCKYSCRIPT_CANCELLED|$DUCKYSCRIPT_REJECTED|$DUCKYSCRIPT_ERROR) break ;;
+        esac
+        case "$pick" in
             1) do_scan    ;;
             2) do_status  ;;
             3) do_rotate  ;;
