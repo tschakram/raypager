@@ -347,7 +347,6 @@ do_cyt_merge() {
 main() {
     LED $LED_WHITE
     START_SPINNER "Connecting to Mudi..."
-
     if ! check_mudi; then
         STOP_SPINNER
         LED $LED_RED
