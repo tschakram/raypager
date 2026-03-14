@@ -15,6 +15,9 @@
 export PATH="/mmc/usr/bin:/mmc/usr/sbin:/mmc/bin:/mmc/sbin:$PATH"
 export LD_LIBRARY_PATH="/mmc/usr/lib:/mmc/lib:${LD_LIBRARY_PATH:-}"
 
+# Ensure this script is readable/executable regardless of how scp set permissions
+chmod 755 "$0" 2>/dev/null
+
 PAYLOAD_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$PAYLOAD_DIR/config.json"
 LOOT_DIR="/root/loot/raypager"
@@ -28,13 +31,23 @@ LED_RED="ff0000"
 LED_BLUE="0000ff"
 LED_WHITE="ffffff"
 
-# ── Read config ───────────────────────────────────────────────────────────────
-_cfg() { python3 -c "import json,sys; d=json.load(open('$CONFIG')); print(d.get('$1','$2'),end='')" 2>/dev/null; }
+# ── Connection config (hardcoded defaults, overridable via config.json) ───────
+MUDI_HOST="192.168.8.1"
+MUDI_USER="root"
+MUDI_KEY="/root/.ssh/mudi_key"
+MUDI_PY="/root/raypager/python"
 
-MUDI_HOST="$(_cfg mudi_host 192.168.8.1)"
-MUDI_USER="$(_cfg mudi_user root)"
-MUDI_KEY="$(_cfg mudi_key /root/.ssh/mudi_key)"
-MUDI_PY="$(_cfg mudi_python /root/raypager/python)"
+# Override defaults from config.json if python3 is available
+if command -v python3 >/dev/null 2>&1 && [ -f "$CONFIG" ]; then
+    _h=$(python3 -c "import json; d=json.load(open('$CONFIG')); print(d.get('mudi_host',''),end='')" 2>/dev/null)
+    _u=$(python3 -c "import json; d=json.load(open('$CONFIG')); print(d.get('mudi_user',''),end='')" 2>/dev/null)
+    _k=$(python3 -c "import json; d=json.load(open('$CONFIG')); print(d.get('mudi_key',''),end='')" 2>/dev/null)
+    _p=$(python3 -c "import json; d=json.load(open('$CONFIG')); print(d.get('mudi_python',''),end='')" 2>/dev/null)
+    [ -n "$_h" ] && MUDI_HOST="$_h"
+    [ -n "$_u" ] && MUDI_USER="$_u"
+    [ -n "$_k" ] && MUDI_KEY="$_k"
+    [ -n "$_p" ] && MUDI_PY="$_p"
+fi
 
 SSH_OPTS="-i $MUDI_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes -o HostKeyAlgorithms=+ssh-rsa"
 
@@ -54,15 +67,14 @@ check_mudi() {
     mudi "echo ok" | grep -q "ok"
 }
 
-# ── GPS from Pager ────────────────────────────────────────────────────────────
+# ── GPS from Mudi (/dev/ttyACM0 @ 4800 baud, u-blox M8130) ───────────────────
 GPS_LAT=""
 GPS_LON=""
 
 get_gps() {
-    # Try Pager GPS (gpsd / NMEA)
+    # Read GPS fix from Mudi via gps.py (best-effort, 15s timeout)
     local fix
-    fix=$(gpspipe -w -n 5 2>/dev/null | grep -m1 '"lat"' | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('lat',''),d.get('lon',''))" 2>/dev/null)
+    fix=$(mudi_py "gps.py" "--timeout" "15" 2>/dev/null)
     if [ -n "$fix" ]; then
         GPS_LAT=$(echo "$fix" | cut -d' ' -f1)
         GPS_LON=$(echo "$fix" | cut -d' ' -f2)

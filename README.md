@@ -29,7 +29,11 @@ IMSI-catcher detection and IMEI rotation for the **GL-E750V2 Mudi V2** portable 
   - AT interface: `gl_modem AT <cmd>` wrapper
 - **WiFi Pineapple Pager** — display/control interface
   - Runs `payload.sh` via DuckyScript framework
-  - Connects to Mudi via SSH
+  - Connects to Mudi via **WiFi** (192.168.8.1) + SSH
+  - USB port free (GPS is on Mudi)
+- **u-blox M8130 USB GPS dongle** — plugged into Mudi USB port
+  - `/dev/ttyACM0` @ 4800 baud, read by `python/gps.py`
+  - Supports GPS + GLONASS + BeiDou (multi-constellation)
 
 ---
 
@@ -38,11 +42,17 @@ IMSI-catcher detection and IMEI rotation for the **GL-E750V2 Mudi V2** portable 
 ```
 WiFi Pineapple Pager
 └── payload.sh  (DuckyScript)
-    └── SSH → GL-E750V2 Mudi V2
-              ├── python/cell_info.py      AT+QENG → serving cell data
-              ├── python/opencellid.py     tower lookup + upload queue
-              ├── python/blue_merle.py     IMEI rotation via Blue Merle
-              └── python/cyt_export.py    CYT JSON reports + merge
+    └── WiFi + SSH → GL-E750V2 Mudi V2
+                     ├── python/cell_info.py      AT+QENG → serving cell data
+                     ├── python/gps.py            NMEA reader → u-blox M8130 (/dev/ttyACM0)
+                     ├── python/opencellid.py     tower lookup + GPS mismatch + upload queue
+                     ├── python/blue_merle.py     IMEI rotation via Blue Merle
+                     └── python/cyt_export.py     CYT JSON reports + merge
+
+Physical connections:
+  GPS dongle  ──USB──▶  Mudi (/dev/ttyACM0, 4800 baud)
+  Mudi        ──LTE──▶  Internet (OpenCelliD API)
+  Pager       ──WiFi──▶ Mudi (192.168.8.1, SSH)
 ```
 
 ---
@@ -76,6 +86,13 @@ AT+QNWINFO             →  band name, PLMN, channel
 AT+COPS?               →  operator name
 AT+CSQ                 →  RSSI
 ```
+
+### `python/gps.py`
+Reads NMEA sentences from the u-blox M8130 GPS dongle on `/dev/ttyACM0`:
+- Pure stdlib — uses `termios` + `os.read()` (no pyserial dependency)
+- Sets 4800 baud raw mode, parses `$GNGGA` (fix quality, lat/lon, altitude, sats) and `$GNRMC` (validity)
+- Returns `lat lon` on stdout; exits non-zero if no fix within timeout
+- Fallback: if no fix (indoors), `get_gps()` in `payload.sh` skips GPS — OpenCelliD lookup proceeds without mismatch check
 
 ### `python/opencellid.py`
 - Looks up towers in [OpenCelliD](https://opencellid.org/) via REST API
@@ -157,6 +174,7 @@ cp -r raypager/ /root/payloads/user/reconnaissance/raypager/
 | Component | Status |
 |---|---|
 | `AT+QENG` cell data (LTE/NR/WCDMA) | ✅ Done |
+| GPS fix via u-blox M8130 on Mudi | ✅ Done |
 | OpenCelliD lookup + GPS mismatch | ✅ Done |
 | OpenCelliD upload queue | ✅ Done |
 | Blue Merle IMEI rotation | ✅ Done |
