@@ -22,7 +22,6 @@ Exit codes:
 
 import base64
 import json
-import math
 import os
 import subprocess
 import sys
@@ -31,6 +30,10 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import logging
+
+from utils import (THREAT_CLEAN, THREAT_UNKNOWN, THREAT_MISMATCH,
+                   THREAT_GHOST, THREAT_NOSERVICE, THREAT_LABELS,
+                   haversine_km as _haversine_km)
 
 try:
     import ssl as _ssl_mod  # noqa: F401
@@ -49,20 +52,6 @@ CACHE_DIR     = "/root/loot/raypager/wigle_cell_cache"
 CACHE_TTL     = 86400 * 7   # 7 days — towers don't move
 API_TIMEOUT   = 10          # seconds
 MISMATCH_KM   = 5.0         # km threshold for position mismatch
-
-THREAT_CLEAN     = 0
-THREAT_UNKNOWN   = 1
-THREAT_MISMATCH  = 2
-THREAT_GHOST     = 3
-THREAT_NOSERVICE = 4
-
-THREAT_LABELS = {
-    THREAT_CLEAN:     "CLEAN",
-    THREAT_UNKNOWN:   "UNKNOWN",
-    THREAT_MISMATCH:  "MISMATCH",
-    THREAT_GHOST:     "GHOST",
-    THREAT_NOSERVICE: "NOSERVICE",
-}
 
 
 # ─── Config ─────────────────────────────────────────────────────────────────
@@ -151,16 +140,6 @@ def _http_get(url, auth_value, timeout=API_TIMEOUT):
         log.warning("curl GET error: %s", e)
     return None
 
-
-# ─── Geometry ────────────────────────────────────────────────────────────────
-
-def _haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 # ─── Lookup ──────────────────────────────────────────────────────────────────

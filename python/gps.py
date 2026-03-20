@@ -44,11 +44,16 @@ def _nmea_checksum_ok(sentence: str) -> bool:
 
 def _parse_ddmm(raw: str, hemi: str) -> float:
     """Convert NMEA ddmm.mmmm + N/S/E/W to decimal degrees."""
-    if not raw:
+    if not raw or "." not in raw:
         return 0.0
     dot = raw.index(".")
-    deg = float(raw[:dot - 2])
-    minutes = float(raw[dot - 2:])
+    if dot < 2:
+        return 0.0
+    try:
+        deg = float(raw[:dot - 2])
+        minutes = float(raw[dot - 2:])
+    except ValueError:
+        return 0.0
     val = deg + minutes / 60.0
     if hemi in ("S", "W"):
         val = -val
@@ -58,15 +63,19 @@ def _parse_ddmm(raw: str, hemi: str) -> float:
 def _open_gps(dev: str) -> int:
     """Open serial device and configure for 4800 baud raw read."""
     fd = os.open(dev, os.O_RDONLY | os.O_NOCTTY)
-    attr = termios.tcgetattr(fd)
-    # input / output speed
-    attr[4] = termios.B4800
-    attr[5] = termios.B4800
-    # raw mode: disable canonical, echo, signals
-    attr[3] = attr[3] & ~(termios.ICANON | termios.ECHO | termios.ISIG)
-    # no flow control
-    attr[2] = attr[2] & ~termios.CRTSCTS
-    termios.tcsetattr(fd, termios.TCSANOW, attr)
+    try:
+        attr = termios.tcgetattr(fd)
+        # input / output speed
+        attr[4] = termios.B4800
+        attr[5] = termios.B4800
+        # raw mode: disable canonical, echo, signals
+        attr[3] = attr[3] & ~(termios.ICANON | termios.ECHO | termios.ISIG)
+        # no flow control
+        attr[2] = attr[2] & ~termios.CRTSCTS
+        termios.tcsetattr(fd, termios.TCSANOW, attr)
+    except Exception:
+        os.close(fd)
+        raise
     return fd
 
 
