@@ -69,6 +69,21 @@ MISMATCH_KM   = 5.0
 CACHE_TTL     = 86400   # 24 h
 
 
+# ─── Threat level constants ──────────────────────────────────────────────────
+
+THREAT_CLEAN     = 0   # Known tower, location OK
+THREAT_UNKNOWN   = 1   # Not in OpenCelliD DB
+THREAT_MISMATCH  = 2   # In DB but position differs significantly
+THREAT_GHOST     = 3   # Tower visible but no MCC/MNC/Cell-ID (real anomaly)
+THREAT_NOSERVICE = 4   # Modem not connected (NOSERVICE/SEARCH/LIMSRV) — not suspicious
+
+THREAT_LABELS = {
+    THREAT_CLEAN:     "CLEAN",
+    THREAT_UNKNOWN:   "UNKNOWN",
+    THREAT_MISMATCH:  "MISMATCH",
+    THREAT_GHOST:     "GHOST",
+    THREAT_NOSERVICE: "NOSERVICE",
+}
 
 # ─── Config / cache helpers ──────────────────────────────────────────────────
 
@@ -258,6 +273,17 @@ def lookup(cell_info, our_lat=None, our_lon=None):
     }
 
     if not all([mcc, mnc, cell_id is not None]):
+        # Distinguish: modem not connected (harmless) vs real ghost tower
+        noservice_state = cell_info.get("noservice", False)
+        modem_state     = cell_info.get("state", "")
+        if noservice_state:
+            return {**base,
+                    "threat": THREAT_NOSERVICE,
+                    "threat_label": THREAT_LABELS[THREAT_NOSERVICE],
+                    "in_db": False,
+                    "db_lat": None, "db_lon": None, "db_accuracy": None,
+                    "distance_km": None,
+                    "reason": f"Modem not connected to network (state: {modem_state})"}
         return {**base,
                 "threat": THREAT_GHOST,
                 "threat_label": THREAT_LABELS[THREAT_GHOST],
@@ -587,7 +613,7 @@ def main():
     print(f"\n{threat_summary(result)}", file=sys.stderr)
 
     # Queue measurement for later upload (only with GPS + non-ghost data)
-    if do_queue and our_lat is not None and threat != THREAT_GHOST:
+    if do_queue and our_lat is not None and threat not in (THREAT_GHOST, THREAT_NOSERVICE):
         path = queue_measurement(info, our_lat, our_lon)
         if path:
             print(f"Measurement queued: {os.path.basename(path)}", file=sys.stderr)
