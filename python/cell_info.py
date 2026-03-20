@@ -152,6 +152,11 @@ def _parse_qeng(raw):
     state = parts[0]
     rat   = parts[1] if len(parts) > 1 else ""
 
+    # Modem not connected — return minimal dict so callers can distinguish
+    # NOSERVICE/SEARCH from a real GHOST (tower without identity)
+    if state in ("NOSERVICE", "SEARCH", "LIMSRV"):
+        return {"state": state, "noservice": True, "rat": None, "raw": raw}
+
     result = None
     if rat == "LTE":
         result = _parse_qeng_lte(parts)
@@ -160,7 +165,7 @@ def _parse_qeng(raw):
     elif rat == "WCDMA":
         result = _parse_qeng_wcdma(parts)
     else:
-        log.warning("Unknown RAT: %s", rat)
+        log.warning("Unknown RAT: %s (state: %s)", rat, state)
         return None
 
     if result:
