@@ -171,9 +171,9 @@ def lookup(cell_info, our_lat=None, our_lon=None):
 
     api_name, api_token = _load_credentials()
     if not api_name:
-        return {**base, "threat": THREAT_GHOST,
-                "threat_label": THREAT_LABELS[THREAT_GHOST],
-                "reason": "WiGLE not configured or disabled"}
+        return {**base, "threat": THREAT_CLEAN,
+                "threat_label": THREAT_LABELS[THREAT_CLEAN],
+                "reason": "WiGLE not configured or disabled — skipped"}
 
     # Cache check
     cpath   = _cache_path(mcc, mnc, tac, cell_id)

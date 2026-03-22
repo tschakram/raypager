@@ -121,7 +121,9 @@ def _curl_get(url, timeout=API_TIMEOUT):
     """HTTP GET via curl -sk (skips cert verification; used without ssl module)."""
     try:
         r = subprocess.run(
-            ["curl", "-sk", "--max-time", str(timeout), url],
+            ["curl", "-sk", "--max-time", str(timeout),
+             "-A", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+             url],
             capture_output=True, timeout=timeout + 2,
         )
         if r.returncode == 0:
@@ -142,6 +144,7 @@ def _curl_post_multipart(url, filename, file_data, timeout=API_TIMEOUT):
             tmp_path = tmp.name
         r = subprocess.run(
             ["curl", "-sk", "--max-time", str(timeout),
+             "-A", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
              "-F", f"dataFile=@{tmp_path};filename={filename};type=application/octet-stream",
              url],
             capture_output=True, timeout=timeout + 2,
@@ -186,7 +189,10 @@ def _api_lookup(api_key, mcc, mnc, cell_id, tac):
             return None
 
     try:
-        with urllib.request.urlopen(url, timeout=API_TIMEOUT) as resp:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+        })
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw)
     except urllib.error.HTTPError as e:
@@ -413,7 +419,8 @@ def _multipart_post(url, fields, filename, file_data):
     data = body.getvalue()
     req  = urllib.request.Request(url, data=data,
                                   headers={"Content-Type": ctype,
-                                           "Content-Length": str(len(data))})
+                                           "Content-Length": str(len(data)),
+                                           "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"})
     try:
         with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             return resp.read().decode("utf-8", errors="replace")
