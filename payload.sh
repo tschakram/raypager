@@ -4,9 +4,10 @@
 # WiFi Pineapple Pager payload (DuckyScript framework)
 #
 # Architecture:
-#   Pager  →  SSH  →  Mudi V2 (GL-E750V2)
-#                      ├── gl_modem AT (EM050-G modem)
-#                      └── python3 /root/raypager/python/
+#   Pager  →  WiFi+SSH  →  Mudi V2 (GL-E750V2)
+#                           ├── gl_modem AT (EM050-G modem)
+#                           ├── python/gps.py  (/dev/ttyACM0, u-blox M8130)
+#                           └── python3 /root/raypager/python/
 #
 # Config:  /root/payloads/user/reconnaissance/raypager/config.json
 # Loot:    /root/loot/raypager/
@@ -53,12 +54,10 @@ SSH_OPTS="-i $MUDI_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchM
 
 # ── SSH helper ────────────────────────────────────────────────────────────────
 mudi() {
-    # mudi <command>  — run command on Mudi, return its stdout
     ssh $SSH_OPTS "$MUDI_USER@$MUDI_HOST" "$@" 2>/dev/null
 }
 
 mudi_py() {
-    # mudi_py <script.py> [args...]  — run Python script on Mudi
     local script="$1"; shift
     mudi "cd '$MUDI_PY' && python3 '$script' $*"
 }
@@ -72,9 +71,8 @@ GPS_LAT=""
 GPS_LON=""
 
 get_gps() {
-    # Read GPS fix from Mudi via gps.py (best-effort, 15s timeout)
     local fix
-    fix=$(mudi_py "gps.py" "--timeout" "15" 2>/dev/null)
+    fix=$(mudi_py "gps.py" "--timeout" "8" 2>/dev/null)
     if [ -n "$fix" ]; then
         GPS_LAT=$(echo "$fix" | cut -d' ' -f1)
         GPS_LON=$(echo "$fix" | cut -d' ' -f2)
@@ -83,17 +81,17 @@ get_gps() {
     return 1
 }
 
+# ── Spinner helpers (capture ID for clean stop) ───────────────────────────────
+spin_start() { START_SPINNER "$1"; }
+spin_stop()  { STOP_SPINNER "$1" 2>/dev/null; STOP_SPINNER 2>/dev/null; }
+
 # ── Threat → LED/VIBRATE ──────────────────────────────────────────────────────
 threat_feedback() {
-    local threat="$1"
-    case "$threat" in
-        0) LED $LED_GREEN  ;;          # CLEAN
-        1) LED $LED_YELLOW             # UNKNOWN — single pulse
-           VIBRATE 200 ;;
-        2) LED $LED_ORANGE             # MISMATCH — double pulse
-           VIBRATE 300; sleep 0.2; VIBRATE 300 ;;
-        3) LED $LED_RED                # GHOST / unverified
-           VIBRATE 500 ;;
+    case "$1" in
+        0) LED $LED_GREEN  ;;
+        1) LED $LED_YELLOW; VIBRATE 200 ;;
+        2) LED $LED_ORANGE; VIBRATE 300; sleep 0.2; VIBRATE 300 ;;
+        3) LED $LED_RED;    VIBRATE 500 ;;
     esac
 }
 
@@ -107,40 +105,43 @@ threat_label() {
     esac
 }
 
+# ── JSON field helper (runs on Pager) ────────────────────────────────────────
+jget() {
+    # jget <json_string> <key> [default]
+    echo "$1" | python3 -c \
+        "import json,sys; d=json.load(sys.stdin); print(d.get('$2','${3:-?}'),end='')" 2>/dev/null
+}
+
 # ── Scan ──────────────────────────────────────────────────────────────────────
 do_scan() {
     LED $LED_BLUE
-    START_SPINNER "Scanning cell..."
+    local spid
+    spid=$(spin_start "Scanning cell...")
 
-    # Get GPS fix first (best-effort)
     get_gps
 
-    # Run cell scan on Mudi
     local cell_json
     cell_json=$(mudi_py "cell_info.py" 2>/dev/null)
-    local cell_rc=$?
 
-    if [ $cell_rc -ne 0 ] || [ -z "$cell_json" ]; then
-        STOP_SPINNER
+    if [ -z "$cell_json" ]; then
+        spin_stop "$spid"
         LED $LED_RED
-        SHOW_REPORT "Scan failed" "Could not reach modem.\nCheck Mudi SSH."
+        SHOW_REPORT "Scan failed" "No cell data from Mudi."
         WAIT_FOR_BUTTON_PRESS
         LED $LED_OFF
         return 1
     fi
 
-    # Parse key fields from JSON for display
     local rat mcc mnc cid rsrp tac
-    rat=$(echo  "$cell_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('rat','?'),end='')"   2>/dev/null)
-    mcc=$(echo  "$cell_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mcc','?'),end='')"   2>/dev/null)
-    mnc=$(echo  "$cell_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mnc','?'),end='')"   2>/dev/null)
-    cid=$(echo  "$cell_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('cell_id','?'),end='')" 2>/dev/null)
-    rsrp=$(echo "$cell_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('rsrp','?'),end='')"  2>/dev/null)
-    tac=$(echo  "$cell_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tac','?'),end='')"   2>/dev/null)
+    rat=$(jget  "$cell_json" rat  LTE)
+    mcc=$(jget  "$cell_json" mcc  -)
+    mnc=$(jget  "$cell_json" mnc  -)
+    cid=$(jget  "$cell_json" cell_id -)
+    rsrp=$(jget "$cell_json" rsrp  -)
+    tac=$(jget  "$cell_json" tac   -)
 
-    START_SPINNER "Checking OpenCelliD..."
+    spid=$(spin_start "Checking OpenCelliD...")
 
-    # Run OpenCelliD lookup on Mudi
     local ocid_out ocid_threat
     if [ -n "$GPS_LAT" ] && [ -n "$GPS_LON" ]; then
         ocid_out=$(mudi_py "opencellid.py" "$GPS_LAT" "$GPS_LON" "--queue" 2>/dev/null)
@@ -150,62 +151,80 @@ do_scan() {
         ocid_threat=$?
     fi
 
-    local threat_lbl
-    threat_lbl=$(threat_label "$ocid_threat")
+    if [ -n "$GPS_LAT" ] && [ -n "$GPS_LON" ]; then
+        mudi_py "cyt_export.py" "scan" "$GPS_LAT" "$GPS_LON" 2>/dev/null
+    else
+        mudi_py "cyt_export.py" "scan" 2>/dev/null
+    fi
 
-    # Save CYT report on Mudi
-    mudi_py "cyt_export.py" "scan" "$GPS_LAT" "$GPS_LON" >/dev/null 2>&1
-
-    STOP_SPINNER
-
-    # Feedback
+    spin_stop "$spid"
     threat_feedback "$ocid_threat"
 
-    # Build display text
     local loc_line="No GPS"
     [ -n "$GPS_LAT" ] && loc_line="$(printf '%.4f' "$GPS_LAT"), $(printf '%.4f' "$GPS_LON")"
 
     local ocid_reason
-    ocid_reason=$(echo "$ocid_out" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('reason',''),end='')" 2>/dev/null)
+    ocid_reason=$(jget "$ocid_out" reason "")
 
-    SHOW_REPORT \
-        "[$threat_lbl] $rat $mcc/$mnc" \
-        "Cell-ID: $cid\nTAC: $tac\nRSRP: $rsrp dBm\nLoc: $loc_line\n\n$ocid_reason"
+    local threat_lbl
+    threat_lbl=$(threat_label "$ocid_threat")
 
+    local body
+    printf -v body "Cell: %s %s/%s\nID:   %s  TAC:%s\nRSRP: %s dBm\nLoc:  %s\n%s" \
+        "$rat" "$mcc" "$mnc" "$cid" "$tac" "$rsrp" "$loc_line" "$ocid_reason"
+
+    SHOW_REPORT "[$threat_lbl]" "$body"
     WAIT_FOR_BUTTON_PRESS
     LED $LED_OFF
     return "$ocid_threat"
 }
 
+# ── Status ────────────────────────────────────────────────────────────────────
+do_status() {
+    local spid
+    spid=$(spin_start "Getting status...")
+    local bm_out
+    bm_out=$(mudi_py "blue_merle.py" "status" 2>/dev/null)
+    spin_stop "$spid"
+
+    local imei imsi radio_label
+    imei=$(jget       "$bm_out" imei       -)
+    imsi=$(jget       "$bm_out" imsi       N/A)
+    radio_label=$(jget "$bm_out" radio_label -)
+
+    spid=$(spin_start "Getting GPS...")
+    local gps_info="No GPS"
+    get_gps && gps_info="$GPS_LAT, $GPS_LON"
+    spin_stop "$spid"
+
+    local body
+    printf -v body "IMEI:  %s\nIMSI:  %s\nRadio: %s\nGPS:   %s" \
+        "$imei" "$imsi" "$radio_label" "$gps_info"
+    SHOW_REPORT "Status" "$body"
+    WAIT_FOR_BUTTON_PRESS
+}
+
 # ── IMEI Rotation ─────────────────────────────────────────────────────────────
 do_rotate() {
-    # Mode picker
-    local pick
-    pick=$(NUMBER_PICKER "IMEI Rotation\n1:Random  2:Deterministic  3:Cancel" 1)
-    case $? in
-        $DUCKYSCRIPT_CANCELLED|$DUCKYSCRIPT_REJECTED|$DUCKYSCRIPT_ERROR) return ;;
-    esac
-
+    local pick rc
+    pick=$(NUMBER_PICKER $'IMEI Rotation\n1:Random 2:Determ. 3:Cancel' 1)
+    rc=$?; [ $rc -ne 0 ] && return
     [ "$pick" -eq 3 ] && return
 
     local mode="random"
     [ "$pick" -eq 2 ] && mode="deterministic"
 
-    CONFIRMATION_DIALOG \
-        "Rotate IMEI?" \
-        "Radio will be disabled.\nDevice powers off after.\nSwap SIM + change location."
-    local confirmed=$?
-    [ "$confirmed" -ne 0 ] && return
+    CONFIRMATION_DIALOG "Rotate IMEI?" \
+        "Radio off. Device powers down. Swap SIM + move."
+    [ $? -ne 0 ] && return
 
     LED $LED_BLUE
-    START_SPINNER "Rotating IMEI ($mode)..."
-
+    local spid
+    spid=$(spin_start "Rotating IMEI...")
     local rot_out
     rot_out=$(mudi_py "blue_merle.py" "rotate" "$mode" 2>/dev/null)
     local rot_rc=$?
-
-    STOP_SPINNER
+    spin_stop "$spid"
 
     if [ $rot_rc -ne 0 ]; then
         LED $LED_RED
@@ -215,30 +234,27 @@ do_rotate() {
         return 1
     fi
 
-    # Parse result
     local imei_before imei_after
-    imei_before=$(echo "$rot_out" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('imei_before','?'),end='')" 2>/dev/null)
-    imei_after=$(echo "$rot_out" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('imei_after','?'),end='')" 2>/dev/null)
+    imei_before=$(jget "$rot_out" imei_before ?)
+    imei_after=$(jget  "$rot_out" imei_after  ?)
 
     LED $LED_GREEN
     VIBRATE 200; sleep 0.1; VIBRATE 200
 
-    SHOW_REPORT \
-        "IMEI Rotated" \
-        "Before: $imei_before\nAfter:  $imei_after\n\nPower off Mudi.\nSwap SIM card.\nChange location.\nThen reboot."
+    local body
+    printf -v body "Before: %s\nAfter:  %s\n\nPower off Mudi.\nSwap SIM. Move. Reboot." \
+        "$imei_before" "$imei_after"
+    SHOW_REPORT "IMEI Rotated" "$body"
     WAIT_FOR_BUTTON_PRESS
 
-    # Offer to power off Mudi
     CONFIRMATION_DIALOG "Power off Mudi now?"
     if [ $? -eq 0 ]; then
-        START_SPINNER "Powering off Mudi..."
+        spid=$(spin_start "Powering off Mudi...")
         mudi_py "blue_merle.py" "radio" "off" >/dev/null 2>&1
         sleep 1
         mudi "echo '{ \"poweroff\": \"1\" }' > /dev/ttyS0" 2>/dev/null
-        STOP_SPINNER
-        SHOW_REPORT "Mudi off" "Swap SIM card.\nChange location.\nThen reboot Mudi."
+        spin_stop "$spid"
+        SHOW_REPORT "Mudi off" "Swap SIM. Move. Reboot Mudi."
         WAIT_FOR_BUTTON_PRESS
     fi
 
@@ -247,10 +263,11 @@ do_rotate() {
 
 # ── Reports ───────────────────────────────────────────────────────────────────
 do_reports() {
-    START_SPINNER "Loading reports..."
+    local spid
+    spid=$(spin_start "Loading reports...")
     local report_list
     report_list=$(mudi_py "cyt_export.py" "list" 2>/dev/null)
-    STOP_SPINNER
+    spin_stop "$spid"
 
     if [ -z "$report_list" ]; then
         SHOW_REPORT "No reports" "Run a scan first."
@@ -258,32 +275,29 @@ do_reports() {
         return
     fi
 
-    # Show last 5 reports as menu
-    local count i=1
-    declare -a rpaths
+    local -a rpaths
+    local i=1
     while IFS= read -r line; do
         rpaths[$i]=$(echo "$line" | awk '{print $NF}')
         ((i++))
         [ $i -gt 5 ] && break
     done <<< "$report_list"
-    count=$((i - 1))
+    local count=$((i - 1))
 
     [ $count -eq 0 ] && { SHOW_REPORT "No reports" "Run a scan first."; WAIT_FOR_BUTTON_PRESS; return; }
 
-    # Build prompt with report labels
-    local menu_prompt="Reports (1-$((count+1))):"
+    local NL=$'\n'
+    local menu_prompt="Reports 1-$count ($((count+1))=Back):"
     for i in $(seq 1 $count); do
         local label
         label=$(mudi_py "cyt_export.py" "show" "${rpaths[$i]}" 2>/dev/null | head -1)
-        menu_prompt="$menu_prompt\n$i:$label"
+        menu_prompt="${menu_prompt}${NL}${i}:${label}"
     done
-    menu_prompt="$menu_prompt\n$((count+1)):Back"
-    local pick
-    pick=$(NUMBER_PICKER "$menu_prompt" "$((count+1))")
-    case $? in
-        $DUCKYSCRIPT_CANCELLED|$DUCKYSCRIPT_REJECTED|$DUCKYSCRIPT_ERROR) return ;;
-    esac
+    menu_prompt="${menu_prompt}${NL}$((count+1)):Back"
 
+    local pick rc
+    pick=$(NUMBER_PICKER "$menu_prompt" "$((count+1))")
+    rc=$?; [ $rc -ne 0 ] && return
     [ "$pick" -gt "$count" ] && return
 
     local detail
@@ -295,62 +309,35 @@ do_reports() {
 # ── Upload pending to OpenCelliD ──────────────────────────────────────────────
 do_upload() {
     LED $LED_BLUE
-    START_SPINNER "Uploading to OpenCelliD..."
+    local spid
+    spid=$(spin_start "Uploading...")
     local upload_out
     upload_out=$(mudi_py "opencellid.py" "--upload" 2>&1)
     local rc=$?
-    STOP_SPINNER
+    spin_stop "$spid"
 
-    if [ $rc -eq 0 ]; then
-        LED $LED_GREEN
-        VIBRATE 200
-    else
-        LED $LED_YELLOW
-    fi
+    if [ $rc -eq 0 ]; then LED $LED_GREEN; VIBRATE 200; else LED $LED_YELLOW; fi
 
-    SHOW_REPORT "Upload done" "$upload_out"
+    SHOW_REPORT "Upload" "$upload_out"
     WAIT_FOR_BUTTON_PRESS
     LED $LED_OFF
 }
 
-# ── Status ────────────────────────────────────────────────────────────────────
-do_status() {
-    START_SPINNER "Checking Mudi status..."
-    local bm_out nwinfo_out
-    bm_out=$(mudi_py "blue_merle.py" "status" 2>/dev/null)
-    STOP_SPINNER
-
-    local imei imsi radio_label
-    imei=$(echo "$bm_out" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('imei','?'),end='')" 2>/dev/null)
-    imsi=$(echo "$bm_out" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('imsi','N/A'),end='')" 2>/dev/null)
-    radio_label=$(echo "$bm_out" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('radio_label','?'),end='')" 2>/dev/null)
-
-    local gps_info="No GPS"
-    get_gps && gps_info="$GPS_LAT, $GPS_LON"
-
-    SHOW_REPORT \
-        "Mudi Status" \
-        "IMEI:  $imei\nIMSI:  $imsi\nRadio: $radio_label\nGPS:   $gps_info"
-    WAIT_FOR_BUTTON_PRESS
-}
-
 # ── CYT Merge ─────────────────────────────────────────────────────────────────
 do_cyt_merge() {
-    START_SPINNER "Merging with CYT..."
+    local spid
+    spid=$(spin_start "Merging CYT...")
     local reports
     reports=$(mudi_py "cyt_export.py" "list" 2>/dev/null | tail -1 | awk '{print $NF}')
     if [ -z "$reports" ]; then
-        STOP_SPINNER
+        spin_stop "$spid"
         SHOW_REPORT "No reports" "Run a scan first."
         WAIT_FOR_BUTTON_PRESS
         return
     fi
     local out
     out=$(mudi_py "cyt_export.py" "merge" "$reports" 2>/dev/null)
-    STOP_SPINNER
+    spin_stop "$spid"
     SHOW_REPORT "CYT Merge" "$out"
     WAIT_FOR_BUTTON_PRESS
 }
@@ -358,33 +345,31 @@ do_cyt_merge() {
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     LED $LED_WHITE
-    START_SPINNER "Connecting to Mudi..."
+    local spid
+    spid=$(spin_start "Connecting...")
     if ! check_mudi; then
-        STOP_SPINNER
+        spin_stop "$spid"
         LED $LED_RED
-        SHOW_REPORT "No Mudi" "SSH to $MUDI_HOST failed.\nCheck connection + key."
+        SHOW_REPORT "No Mudi" "SSH to $MUDI_HOST failed."
         WAIT_FOR_BUTTON_PRESS
         LED $LED_OFF
         exit 1
     fi
-
-    STOP_SPINNER
+    spin_stop "$spid"
     LED $LED_OFF
 
     while true; do
-        local pick
-        pick=$(NUMBER_PICKER "Raypager\n1:Scan  2:Status  3:IMEI\n4:Reports  5:Upload  6:CYT\n7:Exit" 1)
-        case $? in
-            $DUCKYSCRIPT_CANCELLED|$DUCKYSCRIPT_REJECTED|$DUCKYSCRIPT_ERROR) break ;;
-        esac
+        local pick rc
+        pick=$(NUMBER_PICKER $'1:Scan 2:Status 3:IMEI\n4:Reports 5:Upload\n6:CYT 7:Exit' 1)
+        rc=$?; [ $rc -ne 0 ] && break
         case "$pick" in
-            1) do_scan    ;;
-            2) do_status  ;;
-            3) do_rotate  ;;
-            4) do_reports ;;
-            5) do_upload  ;;
+            1) do_scan      ;;
+            2) do_status    ;;
+            3) do_rotate    ;;
+            4) do_reports   ;;
+            5) do_upload    ;;
             6) do_cyt_merge ;;
-            7) break      ;;
+            7) break        ;;
         esac
     done
 
@@ -392,3 +377,4 @@ main() {
 }
 
 main
+exit 0

@@ -358,8 +358,8 @@ def main():
             print(f"Import error: {e}", file=sys.stderr)
             sys.exit(1)
 
-        lat = float(args[1]) if len(args) > 1 else None
-        lon = float(args[2]) if len(args) > 2 else None
+        lat = float(args[1]) if len(args) > 1 and args[1] else None
+        lon = float(args[2]) if len(args) > 2 and args[2] else None
 
         print("Scanning...", file=sys.stderr)
         info = get_cell_info()
