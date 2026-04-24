@@ -52,13 +52,23 @@ def _at(cmd):
 
 # ─── Parsers ────────────────────────────────────────────────────────────────
 
+def _safe_int(v, base=10):
+    """int() that returns None on failure instead of raising."""
+    try:
+        return int(v, base) if base != 10 else int(v)
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_qeng_lte(fields):
     """Parse AT+QENG="servingcell" fields for LTE (FDD/TDD).
 
     fields (0-indexed from after "servingcell"):
       [0]=state  [1]=LTE  [2]=duplex  [3]=MCC  [4]=MNC  [5]=cellID(hex)
       [6]=PCID   [7]=EARFCN  [8]=band  [9]=UL_BW  [10]=DL_BW  [11]=TAC(hex)
-      [12]=RSRP  [13]=RSRQ  [14]=RSSI  [15]=SINR  [16]=CQI  ...
+      [12]=RSRP  [13]=RSRQ  [14]=RSSI  [15]=SINR  [16]=CQI  [17]=tx_power
+      [18]=srxlev
+    TA is not exposed in servingcell — queried separately via AT+QCAINFO when supported.
     """
     try:
         return {
@@ -76,6 +86,9 @@ def _parse_qeng_lte(fields):
             "rsrq":        int(fields[13]),              # dB
             "rssi":        int(fields[14]),              # dBm
             "sinr":        int(fields[15]),              # dB
+            "cqi":         _safe_int(fields[16]) if len(fields) > 16 else None,
+            "tx_power":    _safe_int(fields[17]) if len(fields) > 17 else None,
+            "srxlev":      _safe_int(fields[18]) if len(fields) > 18 else None,
         }
     except (IndexError, ValueError) as e:
         log.warning("LTE field parse error: %s | fields: %s", e, fields)
@@ -106,6 +119,33 @@ def _parse_qeng_nr(fields):
         }
     except (IndexError, ValueError) as e:
         log.warning("NR field parse error: %s | fields: %s", e, fields)
+        return None
+
+
+def _parse_qeng_gsm(fields):
+    """Parse AT+QENG="servingcell" fields for GSM/2G.
+
+    fields: [0]=state [1]=GSM [2]=MCC [3]=MNC [4]=LAC(hex) [5]=cellID(hex)
+            [6]=BSIC [7]=ARFCN [8]=band_gsm [9]=rxlev [10]=txp
+            [11]=rla [12]=drx [13]=c1 [14]=c2 [15]=GPRS [16]=tch_type
+            [17]=ta  (Timing Advance — only valid in DEDICATED state)
+    """
+    try:
+        ta_raw = fields[17] if len(fields) > 17 else None
+        return {
+            "rat":         "GSM",
+            "mcc":         fields[2],
+            "mnc":         fields[3],
+            "lac":         int(fields[4], 16),
+            "cell_id":     int(fields[5], 16),
+            "cell_id_hex": fields[5].upper(),
+            "bsic":        _safe_int(fields[6]),
+            "arfcn":       _safe_int(fields[7]),
+            "rxlev":       _safe_int(fields[9]) if len(fields) > 9 else None,
+            "ta":          _safe_int(ta_raw),
+        }
+    except (IndexError, ValueError) as e:
+        log.warning("GSM field parse error: %s | fields: %s", e, fields)
         return None
 
 
@@ -164,6 +204,8 @@ def _parse_qeng(raw):
         result = _parse_qeng_nr(parts)
     elif rat == "WCDMA":
         result = _parse_qeng_wcdma(parts)
+    elif rat == "GSM":
+        result = _parse_qeng_gsm(parts)
     else:
         log.warning("Unknown RAT: %s (state: %s)", rat, state)
         return None
@@ -225,6 +267,78 @@ def _parse_csq(raw):
     }
 
 
+# ─── Timing Advance probe ──────────────────────────────────────────────────
+# TA is not in +QENG="servingcell" for LTE. Quectel EC25 exposes it via
+# AT+QCAINFO (field 8 of primary cell row). Falls back silently if unsupported.
+
+def _get_timing_advance():
+    """Query Timing Advance via AT+QCAINFO. Returns int (TA units) or None.
+
+    +QCAINFO response (per carrier):
+      +QCAINFO: "PCC",<EARFCN>,<bandwidth>,<band>,<PCID>,<RSRP>,<RSRQ>,<RSSI>,<SINR>[,<TA>]
+    TA field only present on some firmwares / while in CONNECTED state.
+    """
+    raw = _at_quiet("AT+QCAINFO")
+    if not raw:
+        return None
+    # Look for PCC row
+    m = re.search(r'\+QCAINFO:\s*"PCC"[^\r\n]*', raw)
+    if not m:
+        return None
+    parts = [p.strip().strip('"') for p in m.group(0).split(',')]
+    # TA would be the last numeric field when present (position 9 or later)
+    for candidate in reversed(parts):
+        n = _safe_int(candidate)
+        if n is not None and 0 <= n <= 1282:   # LTE TA range
+            return n
+    return None
+
+
+# ─── Cipher / encryption mode probe ────────────────────────────────────────
+# Note: AT does NOT provide standardized cipher-mode reporting on Quectel.
+# We probe several vendor URCs; if none yields data, return None (unknown).
+# Absence of data is NOT a clean-signal — it just means we cannot observe.
+
+def _at_quiet(cmd):
+    """Like _at() but failures are logged at DEBUG (for optional probes)."""
+    import subprocess
+    try:
+        r = subprocess.run([GL_MODEM, "AT", cmd], capture_output=True,
+                           text=True, timeout=AT_TIMEOUT)
+        out = r.stdout.strip()
+        if r.returncode != 0 or "ERROR" in out:
+            log.debug("optional AT %s unsupported: %s", cmd, out)
+            return None
+        return out
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _get_cipher_mode():
+    """Try to detect the active cipher. Returns dict or None if unavailable.
+
+    Known paths tested (best-effort, modem/firmware dependent):
+      AT+QNWCFG="ciphering_ind"   — enable network-initiated URCs
+      AT+QNWINFO                  — already fetched, no cipher info
+      AT+QCSEARCH                 — not cipher, but shows network mode
+    On most EC25 firmwares cipher mode is NOT exposed. That is documented
+    so the monitor doesn't false-positive when the signal is simply missing.
+    """
+    # Try to enable cipher indication (harmless if unsupported)
+    raw = _at_quiet('AT+QNWCFG="ciphering_ind"')
+    if raw and '+QNWCFG:' in raw:
+        m = re.search(r'\+QNWCFG:\s*"ciphering_ind",(\d+),(\d+)', raw)
+        if m:
+            enabled, cipher = m.group(1), m.group(2)
+            return {
+                "available": True,
+                "enabled": int(enabled) == 1,
+                "cipher_value": int(cipher),
+                "plaintext": int(cipher) == 1,   # 1 = ciphering OFF (plaintext)
+            }
+    return {"available": False}
+
+
 # ─── Public API ─────────────────────────────────────────────────────────────
 
 def get_cell_info():
@@ -260,6 +374,15 @@ def get_cell_info():
     if not info:
         return None
 
+    # Timing advance (LTE: separate query; GSM: already from QENG)
+    if info.get("rat") == "LTE" and info.get("ta") is None:
+        info["ta"] = _get_timing_advance()
+
+    # Cipher mode probe (best-effort, often unavailable)
+    cipher = _get_cipher_mode()
+    if cipher:
+        info["cipher"] = cipher
+
     info["timestamp"] = int(time.time())
     return info
 
@@ -289,14 +412,30 @@ def is_suspicious(info):
 
     # Downgrade to 2G/3G while LTE available — classic IMSI-catcher trick
     rat = info.get("rat", "")
-    if rat in ("GSM", "WCDMA"):
-        warnings.append(f"Downgraded to {rat} — potential IMSI-catcher forcing 2G/3G")
+    if rat == "GSM":
+        warnings.append("RAT=GSM (2G) — strong IMSI-catcher indicator (forced downgrade)")
+    elif rat == "WCDMA":
+        warnings.append("RAT=WCDMA (3G) — possible IMSI-catcher downgrade")
 
     # Cell ID 0 or PCID 0 can indicate spoofed cell
     cell_id = info.get("cell_id")
     if cell_id == 0:
         warnings.append("Cell ID is 0 — suspicious")
 
+    # Timing Advance anomaly: very low TA combined with weak signal → spoofed proximity
+    ta = info.get("ta")
+    if ta is not None:
+        if rat == "LTE" and ta == 0 and rsrp is not None and rsrp < -100:
+            warnings.append(f"TA=0 (≤78m) with weak RSRP {rsrp} dBm — spoofed-proximity indicator")
+        if rat == "GSM" and ta == 0 and info.get("rxlev") is not None and info["rxlev"] < 20:
+            warnings.append(f"GSM TA=0 with rxlev {info['rxlev']} — spoofed-proximity indicator")
+
+    # Cipher / plaintext (A5/0 for GSM, EEA0 for LTE)
+    cipher = info.get("cipher") or {}
+    if cipher.get("available") and cipher.get("plaintext"):
+        warnings.append("Ciphering DISABLED (plaintext) — A5/0 or EEA0 forced → IMSI-catcher")
+
+    # Legacy 2G ciphers (A5/0, A5/1) are weak — GSM itself already warned above
     return warnings
 
 
