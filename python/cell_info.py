@@ -439,19 +439,149 @@ def is_suspicious(info):
     return warnings
 
 
+# ─── NEIGHBOR CELLS (AT+QENG="neighbourcell") ───────────────────────────────
+#
+# Counter-Surveillance-Wert: IMSI-Catcher zeigen sich oft an Anomalien in der
+# Nachbarschaft, nicht nur in der Serving Cell:
+#   - 0 Neighbors trotz Stadt -> isolierter Catcher-Tower
+#   - Neighbor PCID nicht in OpenCelliD -> Stingray-Frequenz
+#   - Serving-RSRP springt um >20 dBm -> Power-Boost-Angriff (Lock-in)
+#   - Neighbor RSRP > Serving RSRP -> erzwungener Handover-Block
+
+def _parse_neighbour_lte_intra(parts):
+    """LTE intra-frequency neighbour: same EARFCN as serving cell.
+    Format: "neighbourcell intra","LTE",<earfcn>,<pci>,<rsrq>,<rsrp>,
+            <rssi>,<sinr>,<srxlev>,...
+    """
+    try:
+        return {
+            "kind":   "lte_intra",
+            "rat":    "LTE",
+            "earfcn": int(parts[2]),
+            "pci":    int(parts[3]),
+            "rsrq":   int(parts[4]),
+            "rsrp":   int(parts[5]),
+            "rssi":   int(parts[6]),
+            "sinr":   int(parts[7]) if len(parts) > 7 else None,
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def _parse_neighbour_lte_inter(parts):
+    """LTE inter-frequency neighbour: different EARFCN."""
+    return _parse_neighbour_lte_intra(parts)  # same payload-shape
+
+
+def _parse_neighbour_wcdma(parts):
+    """WCDMA neighbour: <uarfcn>,<cellid>,<rscp>,<ecno>."""
+    try:
+        return {
+            "kind":   "wcdma",
+            "rat":    "WCDMA",
+            "uarfcn": int(parts[2]),
+            "psc":    int(parts[3]),
+            "rscp":   int(parts[4]),
+            "ecno":   int(parts[5]) if len(parts) > 5 else None,
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def _parse_neighbour_gsm(parts):
+    """GSM neighbour: <arfcn>,<cellid>,<bsic>,<rxlev>,..."""
+    try:
+        return {
+            "kind":   "gsm",
+            "rat":    "GSM",
+            "arfcn":  int(parts[2]),
+            "cellid": int(parts[3]) if parts[3].isdigit() else None,
+            "bsic":   int(parts[4]) if len(parts) > 4 else None,
+            "rxlev":  int(parts[5]) if len(parts) > 5 else None,
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def _parse_neighbours(raw):
+    """Parse full AT+QENG="neighbourcell" response. Returns list of dicts."""
+    if not raw:
+        return []
+    neighbours = []
+    for line in raw.splitlines():
+        m = re.search(r'\+QENG:\s*"neighbourcell(?:\s+(intra|inter))?",(.+)',
+                      line)
+        if not m:
+            continue
+        nb_subtype = (m.group(1) or "").lower()
+        parts = [p.strip().strip('"') for p in m.group(2).split(',')]
+        if len(parts) < 4:
+            continue
+        rat = parts[0].upper()
+        if rat == "LTE":
+            if nb_subtype == "inter":
+                nb = _parse_neighbour_lte_inter(["", ""] + parts)
+            else:
+                # Both intra and unspecified -> treat as intra
+                nb = _parse_neighbour_lte_intra(["", ""] + parts)
+            if nb:
+                nb["subtype"] = nb_subtype or "intra"
+        elif rat == "WCDMA":
+            nb = _parse_neighbour_wcdma(["", ""] + parts)
+        elif rat == "GSM":
+            nb = _parse_neighbour_gsm(["", ""] + parts)
+        else:
+            continue
+        if nb:
+            neighbours.append(nb)
+    return neighbours
+
+
+def get_neighbor_cells():
+    """Fragt Neighbour-Cell-Liste vom Modem ab.
+    Returns: {"timestamp": int, "count": int, "neighbours": [...]}.
+    Leere Liste = entweder echt 0 Neighbors oder Modem-Befehl fehlgeschlagen.
+    """
+    raw = _at('AT+QENG="neighbourcell"')
+    nbs = _parse_neighbours(raw)
+    return {
+        "timestamp":  int(time.time()),
+        "count":      len(nbs),
+        "neighbours": nbs,
+        "raw":        raw,
+    }
+
+
 # ─── CLI ────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--json", action="store_true", help="JSON-Output")
+    p.add_argument("--neighbours", action="store_true",
+                   help="Stattdessen Neighbour-Cell-Liste ausgeben")
+    args = p.parse_args()
+
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+
+    if args.neighbours:
+        print("Querying neighbour cells...", file=sys.stderr)
+        nbs = get_neighbor_cells()
+        if args.json or not sys.stdout.isatty():
+            out = {k: v for k, v in nbs.items() if k != "raw"}
+            print(json.dumps(out, indent=2))
+        else:
+            print(f"Neighbours: {nbs['count']}")
+            for n in nbs["neighbours"]:
+                print(f"  {n}")
+        return
 
     print("Querying serving cell info...", file=sys.stderr)
     info = get_cell_info()
-
     if not info:
         print("ERROR: Could not retrieve cell info", file=sys.stderr)
         sys.exit(1)
 
-    # Pretty JSON output
     output = {k: v for k, v in info.items() if k != "raw"}
     print(json.dumps(output, indent=2))
 
