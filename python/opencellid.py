@@ -37,10 +37,6 @@ import urllib.parse
 import urllib.error
 import uuid
 
-from utils import (THREAT_CLEAN, THREAT_UNKNOWN, THREAT_MISMATCH,
-                   THREAT_GHOST, THREAT_NOSERVICE, THREAT_LABELS,
-                   haversine_km as _haversine_km)
-
 # Some embedded Python builds omit _ssl; fall back to curl for HTTPS
 try:
     import ssl as _ssl_mod  # noqa: F401
@@ -71,19 +67,18 @@ CACHE_TTL     = 86400   # 24 h
 
 # ─── Threat level constants ──────────────────────────────────────────────────
 
-THREAT_CLEAN     = 0   # Known tower, location OK
-THREAT_UNKNOWN   = 1   # Not in OpenCelliD DB
-THREAT_MISMATCH  = 2   # In DB but position differs significantly
-THREAT_GHOST     = 3   # Tower visible but no MCC/MNC/Cell-ID (real anomaly)
-THREAT_NOSERVICE = 4   # Modem not connected (NOSERVICE/SEARCH/LIMSRV) — not suspicious
+THREAT_CLEAN    = 0   # Known tower, location OK
+THREAT_UNKNOWN  = 1   # Not in OpenCelliD DB
+THREAT_MISMATCH = 2   # In DB but position differs significantly
+THREAT_GHOST    = 3   # Could not verify at all
 
 THREAT_LABELS = {
-    THREAT_CLEAN:     "CLEAN",
-    THREAT_UNKNOWN:   "UNKNOWN",
-    THREAT_MISMATCH:  "MISMATCH",
-    THREAT_GHOST:     "GHOST",
-    THREAT_NOSERVICE: "NOSERVICE",
+    THREAT_CLEAN:    "CLEAN",
+    THREAT_UNKNOWN:  "UNKNOWN",
+    THREAT_MISMATCH: "MISMATCH",
+    THREAT_GHOST:    "GHOST",
 }
+
 
 # ─── Config / cache helpers ──────────────────────────────────────────────────
 
@@ -136,9 +131,7 @@ def _curl_get(url, timeout=API_TIMEOUT):
     """HTTP GET via curl -sk (skips cert verification; used without ssl module)."""
     try:
         r = subprocess.run(
-            ["curl", "-sk", "--max-time", str(timeout),
-             "-A", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
-             url],
+            ["curl", "-sk", "--max-time", str(timeout), url],
             capture_output=True, timeout=timeout + 2,
         )
         if r.returncode == 0:
@@ -159,7 +152,6 @@ def _curl_post_multipart(url, filename, file_data, timeout=API_TIMEOUT):
             tmp_path = tmp.name
         r = subprocess.run(
             ["curl", "-sk", "--max-time", str(timeout),
-             "-A", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
              "-F", f"dataFile=@{tmp_path};filename={filename};type=application/octet-stream",
              url],
             capture_output=True, timeout=timeout + 2,
@@ -204,10 +196,7 @@ def _api_lookup(api_key, mcc, mnc, cell_id, tac):
             return None
 
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
-        })
-        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=API_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw)
     except urllib.error.HTTPError as e:
@@ -224,6 +213,19 @@ def _api_lookup(api_key, mcc, mnc, cell_id, tac):
         log.warning("OpenCelliD unexpected error: %s", e)
         return None
 
+
+# ─── Geo helpers ────────────────────────────────────────────────────────────
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance between two points (degrees) in km."""
+    R = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (math.sin(d_lat / 2) ** 2
+         + math.cos(math.radians(lat1))
+         * math.cos(math.radians(lat2))
+         * math.sin(d_lon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 # ─── Public API ─────────────────────────────────────────────────────────────
@@ -273,17 +275,6 @@ def lookup(cell_info, our_lat=None, our_lon=None):
     }
 
     if not all([mcc, mnc, cell_id is not None]):
-        # Distinguish: modem not connected (harmless) vs real ghost tower
-        noservice_state = cell_info.get("noservice", False)
-        modem_state     = cell_info.get("state", "")
-        if noservice_state:
-            return {**base,
-                    "threat": THREAT_NOSERVICE,
-                    "threat_label": THREAT_LABELS[THREAT_NOSERVICE],
-                    "in_db": False,
-                    "db_lat": None, "db_lon": None, "db_accuracy": None,
-                    "distance_km": None,
-                    "reason": f"Modem not connected to network (state: {modem_state})"}
         return {**base,
                 "threat": THREAT_GHOST,
                 "threat_label": THREAT_LABELS[THREAT_GHOST],
@@ -445,8 +436,7 @@ def _multipart_post(url, fields, filename, file_data):
     data = body.getvalue()
     req  = urllib.request.Request(url, data=data,
                                   headers={"Content-Type": ctype,
-                                           "Content-Length": str(len(data)),
-                                           "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"})
+                                           "Content-Length": str(len(data))})
     try:
         with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             return resp.read().decode("utf-8", errors="replace")
@@ -535,8 +525,8 @@ def upload_pending(api_key=None):
             stats["failed"] += 1
             break
 
-        # OpenCelliD returns "Measurements uploaded." or "Your measurement has been inserted."
-        if "uploaded" in resp.lower() or "success" in resp.lower() or "inserted" in resp.lower():
+        # OpenCelliD returns "Measurements uploaded." on success
+        if "uploaded" in resp.lower() or "success" in resp.lower():
             os.remove(fpath)
             stats["uploaded"] += 1
             log.debug("Uploaded and removed: %s", fname)
@@ -613,7 +603,7 @@ def main():
     print(f"\n{threat_summary(result)}", file=sys.stderr)
 
     # Queue measurement for later upload (only with GPS + non-ghost data)
-    if do_queue and our_lat is not None and threat not in (THREAT_GHOST, THREAT_NOSERVICE):
+    if do_queue and our_lat is not None and threat != THREAT_GHOST:
         path = queue_measurement(info, our_lat, our_lon)
         if path:
             print(f"Measurement queued: {os.path.basename(path)}", file=sys.stderr)
